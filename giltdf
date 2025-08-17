@@ -1,0 +1,46 @@
+import pandas as pd
+import re
+from pathlib import Path
+
+def load_gilt_file(path: Path) -> pd.DataFrame:
+    # Read the file
+    df = pd.read_excel(path) if path.suffix.lower() in [".xlsx",".xls"] else pd.read_csv(path)
+    
+    # Standardise column names
+    df = df.rename(columns={"Date": "date"})
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    
+    # The yield column is the second one
+    yld_col = df.columns[1]
+    
+    # Parse coupon and maturity year from the header string
+    # Example: "Other Europe | UKT GBP 3.500 22-Oct-2025 LON | Mid Yield"
+    m = re.search(r"UKT GBP ([0-9\.]+)\s+(\d{2})-(\w{3})-(\d{4})", yld_col)
+    if m:
+        coupon = float(m.group(1))
+        mty_year = int(m.group(4))
+    else:
+        coupon, mty_year = None, None
+    
+    # Build tidy output
+    out = pd.DataFrame({
+        "date": df["date"],
+        "series_id": path.stem,        # use filename as identifier
+        "coupon_pct": coupon,
+        "maturity_year": mty_year,
+        "yld": df[yld_col]
+    })
+    
+    return out.dropna(subset=["yld"])
+
+def load_gilt_folder(folder: str | Path) -> pd.DataFrame:
+    folder = Path(folder)
+    frames = []
+    for fn in folder.iterdir():
+        if fn.suffix.lower() in [".csv",".xlsx",".xls"]:
+            frames.append(load_gilt_file(fn))
+    return pd.concat(frames, ignore_index=True)
+
+# Example usage
+gilt_df = load_gilt_folder("./data/gilts")
+print(gilt_df.head())

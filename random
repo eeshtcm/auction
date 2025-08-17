@@ -1,0 +1,38 @@
+def load_gilt_file(path: Path) -> pd.DataFrame:
+    # Detect file type
+    if path.suffix.lower() in [".xlsx", ".xls"]:
+        # For Excel, read normally
+        df = pd.read_excel(path)
+        # Get B1 (row=0, col=1)
+        series_id = pd.read_excel(path, header=None).iloc[0, 1]
+    else:
+        # For CSV, read normally
+        df = pd.read_csv(path)
+        # Get B1 (row=0, col=1)
+        series_id = pd.read_csv(path, header=None).iloc[0, 1]
+
+    # Standardise column names
+    df = df.rename(columns={"Date": "date"})
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+
+    # Yield column is the second one
+    yld_col = df.columns[1]
+
+    # Parse coupon and maturity year from the header string
+    m = re.search(r"UKT GBP ([0-9\.]+)\s+\d{2}-\w{3}-(\d{4})", yld_col)
+    if m:
+        coupon = float(m.group(1))
+        mty_year = int(m.group(2))
+    else:
+        coupon, mty_year = None, None
+
+    # Build tidy output
+    out = pd.DataFrame({
+        "date": df["date"],
+        "series_id": series_id,     # << now from B1
+        "coupon_pct": coupon,
+        "maturity_year": mty_year,
+        "yld": df[yld_col],
+    })
+
+    return out

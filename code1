@@ -1,0 +1,331 @@
+# GBP Gilt Auction Concession (Short vs Long, Daily Windows)
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+# --- Parameters ---
+DATA = Path('data')  # if reading CSVs, place them in ./data/
+BACK_DAYS = 10       # pre window length (trading days)
+FWD_DAYS  = 10       # post window length (trading days)
+
+# Buckets per your spec
+SHORT_MAX = 5        # <= 5y => Short
+LONG_MIN  = 10       # >= 10y => Long
+
+# Curve fit mode: 'linear' (piecewise)
+CURVE_MODE = 'linear'
+
+pd.set_option('display.width', 160)
+pd.set_option('display.max_columns', 80)
+
+
+
+  
+
+# If you already have DataFrames in memory named:
+#   calendar_df, gilt_df, swaps_df, curve_df
+# the loader will use them. Otherwise it will read CSVs from ./data
+
+def ensure_df(preloaded, csv_name):
+    if preloaded is not None and isinstance(preloaded, pd.DataFrame):
+        return preloaded.copy()
+    path = DATA / csv_name
+    return pd.read_csv(path)
+
+try:
+    cal = calendar_df.copy()
+except NameError:
+    cal = ensure_df(None, 'dmo_calendar.csv')
+
+try:
+    gilt = gilt_df.copy()
+except NameError:
+    gilt = ensure_df(None, 'gilt_timeseries.csv')
+
+try:
+    swp = swaps_df.copy()
+except NameError:
+    swp = ensure_df(None, 'swaps_timeseries.csv')
+
+try:
+    curve = curve_df.copy()
+except NameError:
+    curve = ensure_df(None, 'curve_points.csv')
+
+# Basic normalization
+cal['auction_dt'] = pd.to_datetime(cal['auction_dt']).dt.date
+if 'type' in cal.columns:
+    cal['type'] = cal['type'].astype(str).str.lower().str.strip()
+    # Filter to conventional gilts only (ignore linkers)
+    cal = cal[cal['type'].str.contains('conv') | (cal['type'] == 'conventional')]
+
+gilt['date'] = pd.to_datetime(gilt['date']).dt.date
+swp['date']  = pd.to_datetime(swp['date']).dt.date
+curve['date'] = pd.to_datetime(curve['date']).dt.date
+
+# Expected columns:
+# cal: auction_dt, isin, security_name, tenor_years, size_gbp_bn, cover, tail_bp, type (conventional)
+# gilt: date, isin, yld
+# swp:  date, tenor_yrs, sonia_par
+# curve: date, t_yrs, gilt_yld
+
+display(cal.head())
+display(gilt.head())
+display(swp.head())
+display(curve.head())
+
+
+
+def tenor_bucket(yrs: float) -> str:
+    if pd.isna(yrs):
+        return 'Unknown'
+    if yrs <= SHORT_MAX:
+        return 'Short'
+    if yrs >= LONG_MIN:
+        return 'Long'
+    return 'Mid'
+
+def day_index(series_dates, anchor_date):
+    """Map each available date to a relative trading-day index w.r.t. anchor_date."""
+    all_dates = sorted(set(series_dates))
+    idx = {d: i for i, d in enumerate(all_dates)}
+    a = idx.get(anchor_date, None)
+    if a is None:
+        return {}
+    return {d: (i - a) for d, i in idx.items()}
+
+def fit_curve_for_date(curve_df: pd.DataFrame, date, mode='linear'):
+    """Return a function f(t_yrs) -> fitted gilt yield at that t for given date.
+       Using simple piecewise linear interpolation by default.
+    """
+    pts = (curve_df[curve_df['date'] == date][['t_yrs', 'gilt_yld']]
+           .dropna().sort_values('t_yrs'))
+    if pts.empty or len(pts) < 2:
+        return lambda t: np.nan
+    x = pts['t_yrs'].values
+    y = pts['gilt_yld'].values
+
+    def f_lin(t):
+        t = float(t)
+        if t <= x[0]:
+            return float(y[0])
+        if t >= x[-1]:
+            return float(y[-1])
+        j = np.searchsorted(x, t)
+        x0, x1 = x[j-1], x[j]
+        y0, y1 = y[j-1], y[j]
+        return float(y0 + (y1 - y0) * (t - x0) / (x1 - x0))
+
+    return f_lin
+
+def nearest_swap(date, tenor_yrs, swp_df: pd.DataFrame):
+    sub = swp_df[swp_df['date'] == date]
+    if sub.empty:
+        return np.nan
+    exact = sub[sub['tenor_yrs'] == tenor_yrs]
+    if len(exact):
+        return float(exact['sonia_par'].iloc[0])
+    i = (sub['tenor_yrs'] - tenor_yrs).abs().idxmin()
+    return float(sub.loc[i, 'sonia_par'])
+
+
+
+
+
+records = []
+
+cols_present = set(cal.columns)
+needed = {'auction_dt', 'isin', 'tenor_years'}
+missing = needed.difference(cols_present)
+if missing:
+    raise ValueError(f"Missing columns in calendar: {missing}")
+
+aucs = cal[['auction_dt', 'isin', 'tenor_years', 'size_gbp_bn', 'cover', 'tail_bp']].dropna(subset=['isin','auction_dt'])
+
+for _, a in aucs.iterrows():
+    isin  = a['isin']
+    auc_dt = a['auction_dt']
+    tenor = float(a['tenor_years'])
+    bucket = tenor_bucket(tenor)
+
+    its = gilt[gilt['isin'] == isin].copy()
+    if its.empty:
+        continue
+
+    dmap = day_index(its['date'], auc_dt)
+    if not dmap:
+        continue
+
+    for d, rel in dmap.items():
+        if -BACK_DAYS <= rel <= FWD_DAYS:
+            yvals = its.loc[its['date'] == d, 'yld']
+            y_close = float(yvals.iloc[-1]) if len(yvals) else np.nan
+
+            fcurve = fit_curve_for_date(curve, d, CURVE_MODE)
+            y_fit = fcurve(tenor)
+
+            s_par = nearest_swap(d, tenor, swp)
+            asw = s_par - y_close if (pd.notna(s_par) and pd.notna(y_close)) else np.nan
+            curve_resid = y_close - y_fit if (pd.notna(y_close) and pd.notna(y_fit)) else np.nan
+
+            records.append({
+                'auction_dt': auc_dt,
+                'isin': isin,
+                'tenor_years': tenor,
+                'bucket': bucket,
+                'rel_day': rel,
+                'date': d,
+                'y_close': y_close,
+                'swap_par': s_par,
+                'asw': asw,
+                'curve_fit': y_fit,
+                'curve_resid': curve_resid,
+                'size_bn': a.get('size_gbp_bn', np.nan),
+                'cover': a.get('cover', np.nan),
+                'tail_bp': a.get('tail_bp', np.nan)
+            })
+
+panel = pd.DataFrame.from_records(records).sort_values(['auction_dt','isin','rel_day'])
+display(panel.head())
+
+
+
+
+
+
+
+
+def summarize(df: pd.DataFrame, by_cols):
+    rows = []
+    for key, g in df.groupby(by_cols):
+        def v(rel, col):
+            x = g.loc[g['rel_day'] == rel, col]
+            return float(x.mean()) if len(x) else np.nan
+
+        # Pre (T-10 -> T-1)
+        dy_pre   = v(-1, 'y_close')       - v(-10, 'y_close')
+        dasw_pre = v(-1, 'asw')           - v(-10, 'asw')
+        dcrv_pre = v(-1, 'curve_resid')   - v(-10, 'curve_resid')
+
+        # Post vs T0
+        dy_post1   = v(1,  'y_close')     - v(0, 'y_close')
+        dy_post5   = v(5,  'y_close')     - v(0, 'y_close')
+        dy_post10  = v(10, 'y_close')     - v(0, 'y_close')
+
+        dasw_post1  = v(1,  'asw')        - v(0, 'asw')
+        dasw_post5  = v(5,  'asw')        - v(0, 'asw')
+        dasw_post10 = v(10, 'asw')        - v(0, 'asw')
+
+        dcrv_post1  = v(1,  'curve_resid') - v(0, 'curve_resid')
+        dcrv_post5  = v(5,  'curve_resid') - v(0, 'curve_resid')
+        dcrv_post10 = v(10, 'curve_resid') - v(0, 'curve_resid')
+
+        rows.append((*key if isinstance(key, tuple) else (key,),
+                     dy_pre, dasw_pre, dcrv_pre,
+                     dy_post1, dy_post5, dy_post10,
+                     dasw_post1, dasw_post5, dasw_post10,
+                     dcrv_post1, dcrv_post5, dcrv_post10))
+
+    cols = by_cols + [
+        'dy_pre','dasw_pre','dcrv_pre',
+        'dy_post1','dy_post5','dy_post10',
+        'dasw_post1','dasw_post5','dasw_post10',
+        'dcrv_post1','dcrv_post5','dcrv_post10'
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+summary_bucket = summarize(panel, ['bucket'])
+display(summary_bucket)
+
+
+
+
+
+def avg_path(df, bucket, col):
+    sub = df[df['bucket'] == bucket]
+    m = sub.groupby('rel_day')[col].mean().dropna()
+    return m
+
+for metric in ['y_close', 'asw', 'curve_resid']:
+    plt.figure(figsize=(8, 4))
+    for b in ['Short', 'Long']:
+        m = avg_path(panel, b, metric)
+        if len(m):
+            plt.plot(m.index, m.values, label=b)
+    plt.axvline(0, linestyle='--')
+    plt.title(f'Average path around auctions — {metric}')
+    plt.xlabel('Trading days relative to auction')
+    plt.ylabel(metric)
+    plt.legend()
+    plt.show()
+
+
+
+
+
+
+
+  def slopes(df, metric):
+    out = []
+    mask = (df['rel_day'] <= -1) & (df['rel_day'] >= -10)
+    grp = df[mask].groupby(['auction_dt','isin','bucket'])
+    for (auc, isin, b), g in grp:
+        x = g['rel_day'].values
+        y = g[metric].values
+        if len(y) >= 3 and np.isfinite(y).all():
+            cov = np.cov(x, y, ddof=0)[0, 1]
+            var = np.var(x, ddof=0)
+            beta = cov / var if var > 0 else np.nan
+            out.append({'auction_dt': auc, 'isin': isin, 'bucket': b, 'metric': metric, 'slope': beta})
+    return pd.DataFrame(out)
+
+for metr in ['y_close', 'asw', 'curve_resid']:
+    df_s = slopes(panel, metr)
+    plt.figure(figsize=(7, 4))
+    vals_short = df_s[df_s['bucket'] == 'Short']['slope'].dropna()
+    vals_long  = df_s[df_s['bucket'] == 'Long']['slope'].dropna()
+    if len(vals_short) and len(vals_long):
+        bins = np.linspace(min(vals_short.min(), vals_long.min()),
+                           max(vals_short.max(), vals_long.max()), 25)
+    else:
+        bins = 25
+    if len(vals_short):
+        plt.hist(vals_short, bins=bins, alpha=0.5, label='Short')
+    if len(vals_long):
+        plt.hist(vals_long, bins=bins, alpha=0.5, label='Long')
+    plt.title(f'Pre-window slope distribution — {metr}')
+    plt.xlabel('slope per trading day')
+    plt.ylabel('count')
+    plt.legend()
+    plt.show()
+
+
+
+
+
+
+  def corr_heat(df, metric):
+    pre_days  = list(range(-10, 0))   # -10..-1
+    post_days = list(range(0, 11))    # 0..10
+    mat = np.full((len(pre_days), len(post_days)), np.nan)
+    for i, rd_pre in enumerate(pre_days):
+        a = df[df['rel_day'] == rd_pre].groupby(['auction_dt','isin'])[metric].mean()
+        for j, rd_post in enumerate(post_days):
+            b = df[df['rel_day'] == rd_post].groupby(['auction_dt','isin'])[metric].mean()
+            ab = a.to_frame('a').join(b.to_frame('b'), how='inner')
+            if len(ab) > 3 and np.isfinite(ab['a']).all() and np.isfinite(ab['b']).all():
+                mat[i, j] = np.corrcoef(ab['a'], ab['b'])[0, 1]
+    plt.figure(figsize=(8, 5))
+    plt.imshow(mat, aspect='auto', origin='lower')
+    plt.colorbar(label='Correlation')
+    plt.xticks(range(len(post_days)), [f'F{d}' for d in post_days])
+    plt.yticks(range(len(pre_days)), [f'P{abs(d)}' for d in pre_days])
+    plt.title(f'Correlation pre vs post — {metric}')
+    plt.show()
+
+for m in ['y_close', 'asw', 'curve_resid']:
+    corr_heat(panel, m)
+
+

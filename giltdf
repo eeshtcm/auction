@@ -44,3 +44,18 @@ def load_gilt_folder(folder: str | Path) -> pd.DataFrame:
 # Example usage
 gilt_df = load_gilt_folder("./data/gilts")
 print(gilt_df.head())
+
+
+
+from typing import Union
+
+def load_gilt_folder(folder: Union[str, Path]) -> pd.DataFrame:
+    folder = Path(folder)
+    frames = []
+    for fn in folder.iterdir():
+        if fn.suffix.lower() in (".csv",".xlsx",".xls"):
+            frames.append(load_gilt_file(fn))
+    if not frames:
+        raise RuntimeError(f"No CSV/XLS files found in {folder}")
+    return pd.concat(frames, ignore_index=True)
+

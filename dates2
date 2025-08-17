@@ -1,0 +1,105 @@
+import re
+import pandas as pd
+from datetime import datetime
+
+# ---------- 1) Hand-typed rows from your screenshots ----------
+# Keep them simple: auction date + gilt name + issuance method exactly as shown.
+rows = [
+    # ===== 2024 (from your Apr–Aug + Sep–Dec screenshots) =====
+    ("2024-04-04", "4⅝% Treasury Gilt 2034", "Outright Auction"),
+    ("2024-04-09", "4¾% Treasury Gilt 2043",  "Outright Auction"),
+    ("2024-04-10", "3⅓% Treasury Gilt 2027",  "Outright Auction"),
+    ("2024-04-17", "4% Treasury Gilt 2031",   "Outright Auction"),
+    ("2024-04-24", "4⅜% Treasury Gilt 2054",  "Outright Auction"),
+    ("2024-04-30", "1⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-05-01", "4⅝% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-05-08", "1½% Green Gilt 2053",     "Outright Auction"),  # green is conventional
+    ("2024-05-21", "4¾% Treasury Gilt 2043",  "Outright Auction"),
+    ("2024-05-22", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-06-04", "4⅛% Treasury Gilt 2063",  "Outright Auction"),
+    ("2024-06-11", "4¼% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-06-18", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-06-26", "3¾% Treasury Gilt 2038",  "Outright Auction"),
+    ("2024-07-02", "3¾% Treasury Gilt 2027",  "Outright Auction"),
+    ("2024-07-11", "4% Treasury Gilt 2031",   "Outright Auction"),
+    ("2024-07-16", "4¾% Treasury Gilt 2043",  "Outright Auction"),
+    ("2024-07-17", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-07-24", "3⅛% Treasury Gilt 2054",  "Outright Auction"),
+    ("2024-07-30", "4¼% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-08-06", "4¾% Treasury Gilt 2043",  "Outright Auction"),
+    ("2024-08-07", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-08-13", "3¾% Treasury Gilt 2038",  "Outright Auction"),
+    ("2024-08-20", "4% Treasury Gilt 2027",   "Outright Auction"),
+
+    # Sep–Dec 2024 (exclude IL, tenders, syndications)
+    ("2024-09-05", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-09-11", "4⅛% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-09-17", "3⅝% Treasury Gilt 2054",  "Outright Auction"),
+    ("2024-09-18", "0⅞% Green Gilt 2033",     "Outright Auction"),
+    ("2024-09-25", "4% Treasury Gilt 2031",   "Outright Auction"),
+    ("2024-10-01", "4⅜% Treasury Gilt 2043",  "Outright Auction"),
+    ("2024-10-02", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-10-09", "4⅛% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-10-15", "4⅜% Treasury Gilt 2054",  "Outright Auction"),
+    ("2024-10-16", "4% Treasury Gilt 2031",   "Outright Auction"),
+    ("2024-10-23", "3⅜% Treasury Gilt 2027",  "Outright Auction"),
+    ("2024-10-29", "4⅛% Treasury Gilt 2029",  "Outright Auction"),
+    ("2024-10-31", "1½% Green Gilt 2053",     "Outright Auction"),
+    ("2024-11-05", "4½% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-11-06", "3½% Treasury Gilt 2025",  "Outright Auction"),
+    ("2024-11-13", "4⅜% Treasury Gilt 2028",  "Outright Auction"),
+    ("2024-11-19", "3½% Treasury Gilt 2038",  "Outright Auction"),
+    ("2024-12-03", "4⅜% Treasury Gilt 2054",  "Outright Auction"),
+    ("2024-12-04", "4% Treasury Gilt 2031",   "Outright Auction"),
+    ("2024-12-11", "4½% Treasury Gilt 2034",  "Outright Auction"),
+    ("2024-12-17", "4⅜% Treasury Gilt 2054",  "Outright Auction"),
+
+    # ===== 2025 (from your Jan–Mar screenshots) =====
+    ("2025-01-07", "4⅜% Treasury Gilt 2054",  "Outright Auction"),
+    ("2025-01-08", "3⅛% Treasury Gilt 2025",  "Outright Auction"),
+    ("2025-01-15", "0⅞% Green Gilt 2033",     "Outright Auction"),
+    ("2025-01-23", "4⅜% Treasury Gilt 2028",  "Outright Auction"),
+    ("2025-02-04", "3⅛% Treasury Gilt 2030",  "Outright Auction"),
+    ("2025-02-05", "1½% Green Gilt 2053",     "Outright Auction"),
+    ("2025-02-18", "4% Treasury Gilt 2063",   "Outright Auction"),
+    ("2025-02-19", "4⅜% Treasury Gilt 2028",  "Outright Auction"),
+    ("2025-02-27", "4⅜% Treasury Gilt 2040",  "Outright Auction"),
+    ("2025-03-04", "4⅜% Treasury Gilt 2054",  "Outright Auction"),
+    ("2025-03-05", "4⅜% Treasury Gilt 2030",  "Outright Auction"),
+    ("2025-03-12", "4½% Treasury Gilt 2035",  "Outright Auction"),
+    ("2025-03-18", "4⅜% Treasury Gilt 2028",  "Outright Auction"),
+    ("2025-03-25", "4¾% Treasury Gilt 2043",  "Outright Auction"),
+    ("2025-03-27", "4% Treasury Gilt 2031",   "Outright Auction"),
+]
+
+cal = pd.DataFrame(rows, columns=["auction_dt","security_name","issuance_method"])
+cal["auction_dt"] = pd.to_datetime(cal["auction_dt"]).dt.date
+
+# ---------- 2) Keep conventional outright auctions only ----------
+cal = cal[cal["issuance_method"].str.lower().eq("outright auction")].copy()
+# drop obvious index-linked by name (keep "Green Gilt" as conventional)
+cal = cal[~cal["security_name"].str.contains("index-linked", case=False, na=False)]
+
+# ---------- 3) Derive tenor from maturity year in name ----------
+def maturity_year_from_name(name: str):
+    m = re.search(r"(\d{4})", str(name))
+    return int(m.group(1)) if m else None
+
+cal["maturity_year"] = cal["security_name"].apply(maturity_year_from_name)
+cal["tenor_years"] = cal["maturity_year"] - pd.to_datetime(cal["auction_dt"]).year
+
+# ---------- 4) Bucket: Short ≤5y, Long ≥10y (Mid otherwise) ----------
+def bucket(tenor):
+    if pd.isna(tenor): return "Unknown"
+    if tenor <= 5:     return "Short"
+    if tenor >= 10:    return "Long"
+    return "Mid"
+
+cal["bucket"] = cal["tenor_years"].astype(float).apply(bucket)
+
+# Final DataFrame you can feed into the analysis
+calendar_df = cal[["auction_dt","security_name","tenor_years","bucket"]].sort_values("auction_dt").reset_index(drop=True)
+
+display(calendar_df.head(10))
+print("Total auctions kept:", len(calendar_df))
+print(calendar_df["bucket"].value_counts())

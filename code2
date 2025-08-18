@@ -1,0 +1,88 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ---------- config ----------
+BASELINE_REL = -5     # concession relative to T-5; change to -1 for "day-before" concession
+WINDOW = (-10, 10)    # show T-10 ... T+10
+IN_BP = True          # plot in basis points (x100)
+
+def make_concession_panel(panel, metric="y_close", baseline_rel=BASELINE_REL, window=WINDOW):
+    # keep only rows that have the window
+    p = panel[panel["rel_day"].between(window[0], window[1])].copy()
+
+    # baseline per (auction_dt, series_id)
+    base = (p[p["rel_day"]==baseline_rel]
+            .groupby(["auction_dt","series_id"])[metric]
+            .mean().rename("baseline"))
+
+    # join baseline and compute concession
+    p = p.merge(base, on=["auction_dt","series_id"], how="inner")
+    p["concession"] = p[metric] - p["baseline"]
+
+    # convert to bp if desired
+    if IN_BP:
+        p["concession"] = p["concession"] * 100.0
+
+    return p
+
+cons_panel = make_concession_panel(panel, metric="y_close")
+
+
+
+
+
+def envelope_stats(cons_panel):
+    g = cons_panel.groupby(["bucket","rel_day"])["concession"]
+    stats = pd.DataFrame({
+        "mean": g.mean(),
+        "q25":  g.quantile(0.25),
+        "q75":  g.quantile(0.75)
+    }).reset_index()
+    return stats
+
+env = envelope_stats(cons_panel)
+env.head()
+
+
+
+
+def plot_envelope(env, title_prefix="Outright concession"):
+    buckets = [b for b in env["bucket"].dropna().unique()]
+    buckets.sort()
+    for b in buckets:
+        sub = env[env["bucket"]==b].sort_values("rel_day")
+        plt.figure(figsize=(9,4))
+        plt.plot(sub["rel_day"], sub["mean"], label="mean", linewidth=2)
+        plt.plot(sub["rel_day"], sub["q75"],  linestyle="--", label="0.75 quantile")
+        plt.plot(sub["rel_day"], sub["q25"],  linestyle="--", label="0.25 quantile")
+        plt.axvline(0, color="k", linestyle="--", linewidth=1)  # auction day
+        plt.title(f"{title_prefix} = f(t) — {b}")
+        plt.xlabel("Trading days around auction (T=0)")
+        plt.ylabel("Concession (bp)" if IN_BP else "Concession (pct pts)")
+        plt.grid(alpha=0.25)
+        plt.legend(loc="upper left")
+        plt.tight_layout()
+        plt.show()
+
+plot_envelope(env, title_prefix="Outright concession")
+
+
+
+def overlay_mean_by_bucket(cons_panel, title="Outright Concession per tenor"):
+    m = (cons_panel.groupby(["bucket","rel_day"])["concession"]
+                   .mean()
+                   .reset_index()
+                   .pivot(index="rel_day", columns="bucket", values="concession")
+                   .sort_index())
+    plt.figure(figsize=(9,4))
+    m.plot(ax=plt.gca())
+    plt.axvline(0, color="k", linestyle="--", linewidth=1)
+    plt.title(title)
+    plt.xlabel("Trading days around auction (T=0)")
+    plt.ylabel("Concession (bp)" if IN_BP else "Concession (pct pts)")
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.show()
+
+overlay_mean_by_bucket(cons_panel)

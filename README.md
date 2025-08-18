@@ -154,3 +154,45 @@ Network: Which specific pre-horizons best explain T and F1..F5 outcomes?
 That’s exactly the intent of the desk’s heatmap, but your visuals are more distinctive and presentation-friendly.
 
 If you want, I can add a simple wrapper to compute and plot all three metrics (Outright/ASW/Curve) and both visuals per bucket in one go.
+
+
+
+
+
+“We’ve normalised concessions to T–5 as the baseline. Do you think using T–1 as baseline would better capture what traders actually care about in the run-up to the auction?”
+
+“Our fan plots show correlations between pre-auction and post-auction concessions. Would it be more relevant to condition only on auctions with unusually large tails?”
+
+“When measuring ASW concessions, do you think I should use the matched swap tenor or interpolate along the swap curve, given liquidity differences?”
+
+“Right now I’m using piecewise-linear interpolation for the fitted gilt curve. In practice, would the desk prefer splines or Nelson-Siegel as a smoother benchmark?”
+
+About interpretation of results
+
+“If P3 concessions have the strongest predictive link to F1, does that reflect real dealer positioning, or could it just be noise from liquidity patterns?”
+
+“I noticed that longer maturities sometimes show more persistent carry across the auction event window. Does that align with how you’d expect client demand to impact concession?”
+
+“Would you interpret positive correlations as signalling ‘carry’ and negative as ‘reversal’? Or does the desk think about it differently in practice?”
+
+“Do you usually attribute post-auction concession persistence to outright factors, swap spreads, or relative-value versus the curve?”
+
+ About trading application
+
+“If we see strong pre-to-post correlations in ASW concessions, would you expect traders to lean more on swap hedges ahead of auction supply?”
+
+“Could these concession metrics be used systematically for setting up concession trades, or is the desk’s process still mainly discretionary?”
+
+“Would identifying horizons with the highest predictive power (say P3 → F1) help when deciding how much risk to warehouse before auctions?”
+
+“Is there a difference in how you manage risk around auctions for shorts vs longs vs ultras, given the different liquidity and client base?”
+
+ Creative / Big-picture questions
+
+“Do you think correlation structures change in stressed markets? For example, would we expect stronger mean-reversion in concession during volatile periods?”
+
+“Could these plots be useful to distinguish between client-driven concession (flow) and dealer-driven concession (inventory management)?”
+
+“If I extended the analysis to tails or bid-to-cover, which linkages would you expect to show up between pre-auction concession and auction outcome metrics?”
+
+“Would it make sense to normalise concessions by daily volatility, so we’re comparing like-for-like across stable vs choppy periods?”

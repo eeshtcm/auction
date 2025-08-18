@@ -90,3 +90,15 @@ def plot_single_auction(panel: pd.DataFrame,
     fig.autofmt_xdate()
     plt.tight_layout()
     plt.show()
+
+
+
+# Example: pick one auction from your matched calendar
+one = panel[["auction_dt","series_id"]].drop_duplicates().iloc[0]
+plot_single_auction(panel,
+                    auction_dt=one["auction_dt"],
+                    series_id=one["series_id"],
+                    window=(-10,10),
+                    baseline_rel=-5,
+                    mode="levels")        # or mode="concession"
+

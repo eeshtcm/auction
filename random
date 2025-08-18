@@ -306,4 +306,22 @@ def match_series_exact(calendar_df: pd.DataFrame, gilt_df: pd.DataFrame) -> pd.D
 # gilt_df = load_gilt_folder(r"\\...path...\rates\gilts")
 # calendar_df = ...  # your auction calendar before matching (must include 'auction_dt','security_name')
 # cal_matched = match_series_exact(calendar_df, gilt_df)
-# cal_matched.head()
+# cal_matched.head
+
+
+
+
+
+cal = enrich_auction_calendar(calendar_df)
+
+# --- build series metadata (pandas-version safe) ---
+g = gilt_df.groupby("series_id", as_index=True)
+coverage = pd.DataFrame({
+    "first_date":     g["date"].min(),
+    "last_date":      g["date"].max(),
+    "coupon_pct":     g["coupon_pct"].first(),
+    "maturity_date":  g["maturity_date"].first(),
+    "maturity_year":  g["maturity_year"].first(),
+}).reset_index()
+# ---------------------------------------------------
+

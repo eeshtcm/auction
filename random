@@ -1,38 +1,54 @@
-def load_gilt_file(path: Path) -> pd.DataFrame:
-    # Detect file type
-    if path.suffix.lower() in [".xlsx", ".xls"]:
-        # For Excel, read normally
-        df = pd.read_excel(path)
-        # Get B1 (row=0, col=1)
-        series_id = pd.read_excel(path, header=None).iloc[0, 1]
-    else:
-        # For CSV, read normally
-        df = pd.read_csv(path)
-        # Get B1 (row=0, col=1)
-        series_id = pd.read_csv(path, header=None).iloc[0, 1]
+series_meta = gilt_df.drop_duplicates(["series_id","maturity_year"])
+def pick_series(row):
+    cands = series_meta[series_meta["maturity_year"]==row["maturity_year"]]
+    return cands.iloc[0]["series_id"] if not cands.empty else None
+calendar_df["series_id"] = calendar_df.apply(pick_series, axis=1)
+cal_matched = calendar_df.dropna(subset=["series_id"])
 
-    # Standardise column names
-    df = df.rename(columns={"Date": "date"})
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
 
-    # Yield column is the second one
-    yld_col = df.columns[1]
+panel = []
+for _,a in cal_matched.iterrows():
+    g = gilt_df[gilt_df["series_id"]==a["series_id"]].copy()
+    g = g.sort_values("date")
+    dates = list(g["date"].unique())
+    if a["auction_dt"] not in dates: continue
+    pos = dates.index(a["auction_dt"])
+    for k,d in enumerate(dates):
+        rel = k-pos
+        if -10 <= rel <= 10:
+            y = g.loc[g["date"]==d,"yld"].mean()
+            panel.append({
+                "auction_dt": a["auction_dt"],
+                "series_id": a["series_id"],
+                "date": d,
+                "rel_day": rel,
+                "y_close": y,
+                "bucket": a["bucket"]
+            })
+panel = pd.DataFrame(panel)
 
-    # Parse coupon and maturity year from the header string
-    m = re.search(r"UKT GBP ([0-9\.]+)\s+\d{2}-\w{3}-(\d{4})", yld_col)
-    if m:
-        coupon = float(m.group(1))
-        mty_year = int(m.group(2))
-    else:
-        coupon, mty_year = None, None
 
-    # Build tidy output
-    out = pd.DataFrame({
-        "date": df["date"],
-        "series_id": series_id,     # << now from B1
-        "coupon_pct": coupon,
-        "maturity_year": mty_year,
-        "yld": df[yld_col],
-    })
 
-    return out
+
+avg_yld = (panel.groupby(["bucket","rel_day"])["y_close"]
+                 .mean().reset_index()
+                 .pivot(index="rel_day", columns="bucket", values="y_close"))
+
+
+def concessions(df):
+    sub = df[df["rel_day"].between(-10,10)]
+    grp = sub.groupby(["auction_dt","series_id"])
+    t_5 = grp.apply(lambda g: g.loc[g["rel_day"]==-5,"y_close"].mean())
+    t_1 = grp.apply(lambda g: g.loc[g["rel_day"]==-1,"y_close"].mean())
+    t0  = grp.apply(lambda g: g.loc[g["rel_day"]==0,"y_close"].mean())
+    p5  = grp.apply(lambda g: g.loc[g["rel_day"]==5,"y_close"].mean())
+    return pd.DataFrame({
+        "cons_pre_5d": t0 - t_5,
+        "cons_pre_1d": t0 - t_1,
+        "reversal_5d": p5 - t0
+    }).reset_index()
+
+cons_yld = concessions(panel)
+bucket_map = panel.drop_duplicates(["auction_dt","series_id"])[["auction_dt","series_id","bucket"]]
+summary = cons_yld.merge(bucket_map,on=["auction_dt","series_id"]).groupby("bucket").mean()
+

@@ -136,3 +136,147 @@ wide_crv = concessions_wide(panel, metric="curve_resid")
 corr_crv = corr_pre_vs_forward(wide_crv)
 plot_corr_fan(corr_crv, title="Curve concession – correlation fan")
 plot_corr_bipartite(corr_crv, title="Curve concession correlation network", threshold=0.2)
+
+
+
+
+
+BASELINE_REL = -5
+PRE_DAYS = [8,7,6,5,4,3,2,1]     # adjust to what you truly have
+FWD_DAYS = [0,1,2,3,4,5]
+
+def concessions_wide(panel, metric="y_close",
+                     baseline_rel=BASELINE_REL,
+                     pre_days=PRE_DAYS, fwd_days=FWD_DAYS,
+                     in_bp=True):
+    p = panel[panel["rel_day"].between(-max(pre_days), max(fwd_days))].copy()
+
+    base = (p[p["rel_day"]==baseline_rel]
+              .groupby(["auction_dt","series_id"])[metric]
+              .mean().rename("base"))
+    p = p.merge(base, on=["auction_dt","series_id"], how="inner")
+    p["cons"] = p[metric] - p["base"]
+    if in_bp:
+        p["cons"] = p["cons"]*100.0
+
+    # pivot; DO NOT drop rows with NaN here
+    wide = p.pivot_table(index=["auction_dt","series_id"],
+                         columns="rel_day", values="cons", aggfunc="mean")
+
+    rename = { -k: f"P{k}" for k in pre_days }
+    rename.update({0:"T"})
+    rename.update({ k: f"F{k}" for k in fwd_days if k>0 })
+    wide = wide.rename(columns=rename)
+
+    # attach bucket for later grouping if needed
+    bmap = panel.drop_duplicates(["auction_dt","series_id"])[["auction_dt","series_id","bucket"]]
+    wide = wide.reset_index().merge(bmap, on=["auction_dt","series_id"], how="left")
+
+    return wide
+
+
+
+import numpy as np
+import pandas as pd
+
+def corr_pre_vs_forward(wide_df, min_periods=8):
+    pre_cols = [c for c in wide_df.columns if c.startswith("P")]
+    fwd_cols = ["T"] + [c for c in wide_df.columns if c.startswith("F")]
+
+    out = pd.DataFrame(index=pre_cols, columns=fwd_cols, dtype=float)
+
+    for pre in pre_cols:
+        for fwd in fwd_cols:
+            s = wide_df[[pre, fwd]].dropna()
+            if len(s) >= min_periods:
+                out.loc[pre, fwd] = s[pre].corr(s[fwd])
+            else:
+                out.loc[pre, fwd] = np.nan
+    return out
+
+
+
+
+import matplotlib.pyplot as plt
+import networkx as nx
+
+def plot_corr_fan(pre_fwd_corr, title="Correlation fan (concession)"):
+    plt.figure(figsize=(10,5))
+    x = list(pre_fwd_corr.columns)
+    any_line = False
+
+    for pre in pre_fwd_corr.index:
+        y = pre_fwd_corr.loc[pre].to_numpy(dtype=float)
+        if np.all(np.isnan(y)):
+            # nothing to plot for this pre horizon
+            continue
+        any_line = True
+        plt.plot(x, y, marker="o", alpha=0.85, label=pre)
+        # annotate strongest point if any finite value exists
+        finite_mask = np.isfinite(y)
+        if finite_mask.any():
+            imax = np.argmax(np.abs(y[finite_mask]))
+            # map back to original index
+            idxs = np.where(finite_mask)[0]
+            j = idxs[imax]
+            plt.annotate(f"{y[j]:+.2f}", (j, y[j]),
+                         textcoords="offset points", xytext=(0,6),
+                         ha="center", fontsize=8)
+
+    plt.axhline(0, color="k", ls="--", lw=1)
+    plt.ylim(-1, 1)
+    plt.title(title)
+    plt.ylabel("Correlation (carry + / mean-revert −)")
+    plt.grid(alpha=0.25)
+    if any_line:
+        plt.legend(ncol=2, fontsize=8, frameon=False)
+    else:
+        plt.text(0.5, 0.5, "No valid pairwise correlations (check horizons/min_periods).",
+                 ha="center", va="center", transform=plt.gca().transAxes)
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+def plot_corr_bipartite(pre_fwd_corr, title="Concession correlation network", threshold=0.2):
+    pre_nodes = list(pre_fwd_corr.index)
+    fwd_nodes = list(pre_fwd_corr.columns)
+    G = nx.Graph()
+
+    G.add_nodes_from(pre_nodes, bipartite=0)
+    G.add_nodes_from(fwd_nodes, bipartite=1)
+
+    # add edges only for finite & above threshold
+    for i, pre in enumerate(pre_nodes):
+        for j, fwd in enumerate(fwd_nodes):
+            w = pre_fwd_corr.iloc[i, j]
+            if pd.notna(w) and abs(w) >= threshold:
+                G.add_edge(pre, fwd, weight=abs(w), sign=np.sign(w))
+
+    pos = {}
+    y_pre = np.linspace(0, 1, len(pre_nodes)) if pre_nodes else []
+    y_fwd = np.linspace(0, 1, len(fwd_nodes)) if fwd_nodes else []
+    for yp, n in zip(y_pre, pre_nodes): pos[n] = (0.0, 1-yp)
+    for yf, n in zip(y_fwd, fwd_nodes): pos[n] = (1.0, 1-yf)
+
+    plt.figure(figsize=(10,6))
+    nx.draw_networkx_nodes(G, pos, nodelist=pre_nodes, node_color="#bcdff5", node_size=900, edgecolors="k")
+    nx.draw_networkx_nodes(G, pos, nodelist=fwd_nodes, node_color="#f8d9b5", node_size=900, edgecolors="k")
+    nx.draw_networkx_labels(G, pos, font_size=9)
+
+    widths = [2 + 6*G[u][v]['weight'] for u,v in G.edges()]
+    colors = ["#1f77b4" if G[u][v]['sign']>0 else "#d62728" for u,v in G.edges()]
+    nx.draw_networkx_edges(G, pos, width=widths, edge_color=colors, alpha=0.85)
+
+    plt.title(f"{title} (|corr| ≥ {threshold:.1f})")
+    plt.axis("off"); plt.tight_layout(); plt.show()
+
+
+
+
+wide_out = concessions_wide(panel, metric="y_close")
+corr_out = corr_pre_vs_forward(wide_out, min_periods=6)  # adjust if needed
+plot_corr_fan(corr_out, title="Outright concession – correlation fan")
+plot_corr_bipartite(corr_out, title="Outright concession correlation network", threshold=0.25)
+

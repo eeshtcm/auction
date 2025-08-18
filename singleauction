@@ -1,0 +1,92 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import date
+
+def plot_single_auction(panel: pd.DataFrame,
+                        auction_dt: date,
+                        series_id: str,
+                        window=(-10, 10),
+                        baseline_rel=-5,
+                        mode="levels",   # "levels" or "concession"
+                        in_bp=True,
+                        title=None):
+    """
+    Single-auction plot showing Yield, ASW, Curve residual over time.
+
+    mode="levels": plots raw levels (Yield %, ASW %, Curve residual %)
+    mode="concession": plots vs baseline at rel_day=baseline_rel (bp if in_bp=True)
+    """
+    # slice the auction window
+    sub = panel[(panel["auction_dt"] == pd.to_datetime(auction_dt).date()) &
+                (panel["series_id"] == series_id) &
+                (panel["rel_day"].between(window[0], window[1]))].copy()
+    if sub.empty:
+        raise ValueError("No rows found for that auction_dt / series_id in the given window.")
+
+    sub = sub.sort_values("date")
+
+    # compute concessions vs baseline if needed
+    if mode == "concession":
+        base_row = sub[sub["rel_day"] == baseline_rel]
+        if base_row.empty:
+            raise ValueError(f"No baseline row at rel_day={baseline_rel} for this auction.")
+        y_base   = float(base_row["y_close"].iloc[0])
+        asw_base = float(base_row["asw"].iloc[0]) if "asw" in sub.columns else np.nan
+        crv_base = float(base_row["curve_resid"].iloc[0]) if "curve_resid" in sub.columns else np.nan
+
+        sub["y_plot"]   = sub["y_close"]   - y_base
+        sub["asw_plot"] = sub["asw"]       - asw_base if "asw" in sub.columns else np.nan
+        sub["crv_plot"] = sub["curve_resid"] - crv_base if "curve_resid" in sub.columns else np.nan
+
+        if in_bp:
+            sub[["y_plot","asw_plot","crv_plot"]] = sub[["y_plot","asw_plot","crv_plot"]]*100.0
+
+        ylab_left  = "Concession (bp)" if in_bp else "Concession (pct pts)"
+        ylab_right = ylab_left
+        ttl_mode   = f" – Concession vs T{baseline_rel:+d}"
+    else:
+        # raw levels
+        sub["y_plot"]   = sub["y_close"]
+        sub["asw_plot"] = sub["asw"] if "asw" in sub.columns else np.nan
+        sub["crv_plot"] = sub["curve_resid"] if "curve_resid" in sub.columns else np.nan
+
+        ylab_left  = "Yield / ASW (%)"
+        ylab_right = "Curve residual (%)"
+        ttl_mode   = " – Levels"
+
+    # build the figure
+    fig, ax1 = plt.subplots(figsize=(11, 3.8))
+    ax2 = ax1.twinx()
+
+    # Plot Yield (blue) & ASW (green) on left axis
+    ax1.plot(sub["date"], sub["y_plot"],   marker="o", linewidth=1.8, label="Yield", zorder=3)
+    if sub["asw_plot"].notna().any():
+        ax1.plot(sub["date"], sub["asw_plot"], marker="o", linewidth=1.8, label="ASW", zorder=2)
+
+    # Plot Curve residual (red) on right axis
+    if sub["crv_plot"].notna().any():
+        ax2.plot(sub["date"], sub["crv_plot"], marker="o", linewidth=1.8, color="C3", label="Curve")
+
+    # vertical line at auction day
+    a_day = pd.to_datetime(auction_dt).date()
+    ax1.axvline(a_day, color="k", linestyle="--", linewidth=1)
+
+    # labels / title
+    ax1.set_ylabel(ylab_left)
+    ax2.set_ylabel(ylab_right)
+    ax1.set_xlabel("")  # date axis
+    if title is None:
+        title = f"Auction {auction_dt} – {series_id}{ttl_mode}"
+    plt.title(title)
+
+    # legends (combine both axes)
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", frameon=False)
+
+    # cosmetics
+    ax1.grid(alpha=0.25)
+    fig.autofmt_xdate()
+    plt.tight_layout()
+    plt.show()

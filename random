@@ -35,6 +35,9 @@ avg_yld = (panel.groupby(["bucket","rel_day"])["y_close"]
                  .pivot(index="rel_day", columns="bucket", values="y_close"))
 
 
+
+
+
 def concessions(df):
     sub = df[df["rel_day"].between(-10,10)]
     grp = sub.groupby(["auction_dt","series_id"])
@@ -52,3 +55,11 @@ cons_yld = concessions(panel)
 bucket_map = panel.drop_duplicates(["auction_dt","series_id"])[["auction_dt","series_id","bucket"]]
 summary = cons_yld.merge(bucket_map,on=["auction_dt","series_id"]).groupby("bucket").mean()
 
+
+print("\nConcession summary by bucket (levels are in percentage points; ×100 for bp):")
+print(summary.round(4))
+
+# Optional: also show distribution per bucket
+dist = (per_auction.merge(bucket_map, on=["auction_dt","series_id"], how="left")
+                  .groupby("bucket")[["cons_pre_5d","cons_pre_1d","reversal_5d"]]
+                  .describe())

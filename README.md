@@ -196,3 +196,38 @@ About interpretation of results
 “If I extended the analysis to tails or bid-to-cover, which linkages would you expect to show up between pre-auction concession and auction outcome metrics?”
 
 “Would it make sense to normalise concessions by daily volatility, so we’re comparing like-for-like across stable vs choppy periods?”
+
+
+
+
+
+
+
+
+
+What this particular plot shows
+
+Very near-term pre days carry strongly into the auction:
+
+P1 (pink) has a very high correlation with T (+0.88), still positive but decaying out to F5 (+0.6).
+⇒ The last-day concession is highly predictive of day-of and remains somewhat elevated for several days.
+
+P2 and P3 are also strongly positive at T (~+0.76, ~+0.67) with gradual decay across F1–F5.
+
+P4 is moderately positive at T (~+0.46) and slowly declines.
+
+Earlier pre horizons show little link or mild mean reversion:
+
+P6 (green) is negative at T (~−0.24) and drifts toward ~0 by F3–F5, implying earlier build-ups tend to have unwound by the auction.
+
+P7 is slightly negative at T (~−0.10) and moves toward zero/weak positive by F4–F5.
+
+(Lines for P8/P5 hover near zero/low positives—weak predictive power.)
+
+Takeaways you can state
+
+Concession that forms in the last 1–3 trading days carries the most into the auction and only partially reverses in the week after.
+
+Concession that forms earlier (≥5–6 days out) is much less informative about auction-day conditions and often mean-reverts by T.
+
+The downward slope along each line from T to F5 reflects decay of the relationship—consistent with post-auction normalization.

@@ -222,3 +222,48 @@ for b, (model, table) in results.items():
 
 for b in features["bucket"].unique():
     scatter_fit(features, bucket=b)
+
+
+
+
+Incorporating Demand Dynamics
+
+So far, my analysis has focused on the supply side — issuance volumes, QE/QT flows, and how those drive auction concessions. But supply only tells half the story. Concession is ultimately about where buyers are willing to step in. That depends on the demand environment at the time of each auction.
+
+What “demand dynamics” mean
+
+Demand in the gilt market is not just about who turns up at the auction. It’s about how attractive gilts look relative to other investments, to swaps, and to funding conditions. When gilts are cheap versus their peers, buyers are happy to add risk and concessions are smaller. When they look expensive or hard to finance, investors hold back and concessions widen.
+
+The key demand drivers I would consider
+
+Relative value vs swaps (ASW levels): If gilts screen cheap to swaps, asset-swap buyers provide a natural demand base, reducing the need for concession.
+
+Curve positioning: Investors constantly look at whether a gilt is cheap or rich versus the surrounding curve. Cheap bonds attract curve RV buyers and reduce concession.
+
+Cross-market comparisons: Overseas investors look at gilts relative to Treasuries and Bunds after hedging costs. If gilts screen cheap, that lifts demand.
+
+Repo and funding conditions: If a bond is easy to finance, or trades “special” in repo, it becomes more attractive to leveraged buyers. Tight funding, by contrast, discourages demand.
+
+Carry and roll-down: If holding a bond provides positive carry and roll, investors are more comfortable warehousing risk, again supporting demand.
+
+Risk appetite and volatility: When volatility is low and risk appetite high, demand for gilts improves. In stressed, high-volatility conditions, demand falls and concessions increase.
+
+Structural buyers: At times, insurers, pension funds, or LDI accounts create a baseline of demand, especially for long-dated paper. These flows can compress concessions regardless of supply pressure.
+
+Why this matters
+
+Two auctions with the same amount of supply can behave very differently depending on these demand conditions. In a strong demand backdrop — cheap gilts vs swaps, easy repo, positive carry — concessions tend to be small. In a weak demand backdrop — rich gilts, poor funding, negative carry — concessions can be much larger.
+
+How I would incorporate this
+
+For my analysis, I would overlay supply-side drivers with a composite demand measure that captures these conditions. That allows me to show:
+
+Concessions widen most when heavy supply coincides with weak demand.
+
+When supply is heavy but demand is strong, concessions are muted.
+
+This helps explain why concessions vary so much across seemingly similar auctions.
+
+Takeaway
+
+By combining both supply pressures and demand dynamics, we get a much richer framework. It not only explains past auction behaviour more convincingly, but also gives traders a forward-looking signal: when to expect larger concessions, and when demand might cushion supply.

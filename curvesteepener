@@ -1,0 +1,55 @@
+1. Clarify the trading logic
+
+Auctions inject net supply at a point on the curve (say, a new 10Y gilt).
+
+Concession means that bond cheapens into supply.
+
+Dealers hedge this duration by going short the auction tenor and long nearby maturities, which mechanically creates curve steepening or flattening flows.
+
+👉 That’s why the trader suggested curve steepeners: you can try to front-run or fade these hedging flows.
+
+2. Define the trade structure
+
+Instead of just “curve steepening,” be precise:
+
+For short auctions (2–5Y), the hedge flow tends to push 2s10s steeper.
+
+For long auctions (20–30Y), the hedge flow can push 10s30s steeper.
+So the trade is: “buy steepeners in the bucket being issued, hold around the auction, exit after supply clears.”
+
+3. Test systematically
+
+You’d want to backtest something like:
+
+Entry: T−5 to T−1 (pre-auction).
+
+Position: Receive front leg, pay back leg (steepener).
+
+Exit: T+2 to T+5 (after supply absorbed).
+Measure average P&L across auctions.
+
+If you find systematic steepening around certain tenors, you can justify the trade.
+
+4. Refine with conditioning
+
+The raw idea may be too noisy. Refine by:
+
+Auction size relative to market depth: bigger auctions should drive stronger steepening.
+
+Net supply regime: effect should be larger in heavy QT years.
+
+Curve regime: works best when the curve is flat and dealers are more duration-sensitive.
+
+5. Position sizing & risk
+
+Even if it works, the effect is small (a few bps).
+So you’d:
+
+Size based on historical volatility of 2s10s / 10s30s.
+
+Cut quickly if macro data hits (e.g. CPI, BoE).
+
+✅ Refined takeaway for presentation:
+Instead of showing parallel concession/curve lines, frame it as:
+
+“Because concession arises from hedging flows into the auction tenor, we tested whether it creates predictable steepening/flattening around auctions. The trade would be to enter curve steepeners in the auction bucket pre-supply, and unwind after absorption. Our next step is to condition this on auction size, tenor, and macro regime to see where it has positive expectancy.”

@@ -43,3 +43,182 @@ df["mod_dur"] = 0.9 * df["tenor_years"]
 
 issuance_df = df[["date", "gilt_name", "tenor_years", "notional_bn", "mod_dur", "bucket"]].copy()
 issuance_df["type"] = "auction"   # all these rows are auctions
+
+
+
+
+
+
+# =============================== NET DURATION SUPPLY → CONCESSION REGRESSION (No Curve Controls) ===============================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+try:
+    import statsmodels.api as sm
+except Exception as e:
+    raise RuntimeError("statsmodels is required for the OLS summary.") from e
+
+# ----------------------------------------- CONFIG -----------------------------------------
+CFG = dict(
+    date_col="date",
+    tenor_col="tenor_years",
+    notional_bn_col="notional_bn",     # billions of GBP; if absent, try 'notional_gbp' (÷1e9) or 'size_mn' (÷1e3)
+    mod_dur_col="mod_dur",
+    type_col="type",
+    bucket_col="bucket",
+)
+
+def bucketize_tenor(T):
+    if pd.isna(T): return np.nan
+    T = float(T)
+    if T < 7: return "Short"
+    if T < 15: return "Mid"
+    return "Long"
+
+def approx_mod_dur_from_tenor(T):
+    if pd.isna(T): return np.nan
+    T = float(T)
+    if T <= 5:   return 0.85 * T
+    if T <= 12:  return 0.90 * T
+    return 0.95 * T
+
+LOOKBACK_K = 5    # business days window for cum supply
+PANEL_CONC_COL = "concession"   # panel_long concession column (bp)
+
+# ----------------------------------------- SUPPLY PREP -----------------------------------------
+def _ensure_dt(s): return pd.to_datetime(s, errors="coerce").dt.normalize()
+
+def _coerce_notional_bn(df):
+    if CFG["notional_bn_col"] in df.columns:
+        return df[CFG["notional_bn_col"]].astype(float)
+    if "notional_gbp" in df.columns:
+        return df["notional_gbp"].astype(float) / 1e9
+    if "size_mn" in df.columns:
+        return df["size_mn"].astype(float) / 1e3
+    raise ValueError("No notional column found.")
+
+def _prep_supply_frame(df, label_for_debug):
+    df = df.copy()
+    dc, tc, nc, mc, bc = CFG["date_col"], CFG["tenor_col"], CFG["notional_bn_col"], CFG["mod_dur_col"], CFG["bucket_col"]
+    df[dc] = _ensure_dt(df[dc])
+    if tc in df.columns:
+        df[tc] = pd.to_numeric(df[tc], errors="coerce")
+    else:
+        df[tc] = np.nan
+    if bc not in df.columns:
+        df[bc] = df[tc].apply(bucketize_tenor)
+    if nc not in df.columns:
+        df[nc] = _coerce_notional_bn(df)
+    if mc not in df.columns:
+        df[mc] = df[tc].apply(approx_mod_dur_from_tenor)
+    df["dur_load"] = df[nc].astype(float) * df[mc].astype(float)
+    keep = [dc, tc, bc, nc, mc, "dur_load"]
+    if CFG["type_col"] in df.columns: keep.append(CFG["type_col"])
+    df = df[keep].dropna(subset=[dc, "dur_load"])
+    return df
+
+def build_daily_net_duration_supply(issuance_df=None,
+                                    qt_sales_df=None,
+                                    qt_maturities_df=None,
+                                    qe_purchases_df=None):
+    frames = []
+    if issuance_df is not None:
+        f = _prep_supply_frame(issuance_df, "issuance"); f["comp"] = "issuance"; frames.append(f)
+    if qt_sales_df is not None:
+        f = _prep_supply_frame(qt_sales_df, "qt_sales"); f["comp"] = "qt"; frames.append(f)
+    if qt_maturities_df is not None:
+        f = _prep_supply_frame(qt_maturities_df, "qt_maturities"); f["comp"] = "qt"; frames.append(f)
+    if qe_purchases_df is not None:
+        f = _prep_supply_frame(qe_purchases_df, "qe_purchases"); f["comp"] = "qe"; f["dur_load"] = -f["dur_load"]; frames.append(f)
+    if not frames: raise ValueError("No supply components provided.")
+    s = pd.concat(frames, ignore_index=True)
+    dc, bc = CFG["date_col"], CFG["bucket_col"]
+    daily = (s.groupby([dc, bc, "comp"], as_index=False)["dur_load"].sum())
+    daily_w = daily.pivot_table(index=[dc, bc], columns="comp", values="dur_load", aggfunc="sum").fillna(0.0).reset_index()
+    for col in ["issuance", "qt", "qe"]:
+        if col not in daily_w.columns: daily_w[col] = 0.0
+    daily_w["net_dur"] = daily_w["issuance"] + daily_w["qt"] + daily_w["qe"]
+    tot = (daily_w.groupby(dc, as_index=False)[["issuance","qt","qe","net_dur"]].sum()
+                 .assign(**{bc: "ALL"}))
+    out = pd.concat([daily_w, tot], ignore_index=True)
+    return out.rename(columns={dc: "date"}).sort_values(["date", bc])
+
+# ----------------------------------------- FEATURES PER AUCTION -----------------------------------------
+def features_for_regression(panel_long, daily_supply, lookback_k=LOOKBACK_K):
+    p = panel_long.copy()
+    p["date"] = _ensure_dt(p["date"])
+    p["auction_dt"] = _ensure_dt(p["auction_dt"])
+    pre = p[p["rel_day"].between(-lookback_k, -1)]
+    tgt = (pre.groupby(["auction_dt","series_id","bucket"], as_index=False)[PANEL_CONC_COL]
+              .mean()
+              .rename(columns={PANEL_CONC_COL: "pre_concession_bp"}))
+    rows = []
+    for _, a in tgt.iterrows():
+        b, adt = a["bucket"], a["auction_dt"]
+        db = daily_supply[daily_supply["bucket"]==b]
+        win = db[(db["date"] <= adt - pd.offsets.BDay(1)) & (db["date"] >= adt - pd.offsets.BDay(lookback_k))]
+        rows.append({
+            "auction_dt": adt, "series_id": a["series_id"], "bucket": b,
+            "cum_issuance_dur": win["issuance"].sum(),
+            "cum_qt_dur": win["qt"].sum(),
+            "cum_net_dur": win["net_dur"].sum()
+        })
+    sup = pd.DataFrame(rows)
+    x = tgt.merge(sup, on=["auction_dt","series_id","bucket"], how="left")
+    return x.fillna(0.0)
+
+# ----------------------------------------- REGRESSION -----------------------------------------
+def run_bucket_regressions(features_df):
+    res = {}
+    y_col = "pre_concession_bp"
+    Xcols = ["cum_issuance_dur", "cum_qt_dur", "cum_net_dur"]
+    for b, dfb in features_df.groupby("bucket", sort=False):
+        if dfb.empty: continue
+        X = dfb[Xcols].astype(float)
+        y = dfb[y_col].astype(float)
+        X = sm.add_constant(X)
+        model = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags":2})
+        tab = pd.DataFrame({"coef": model.params, "t": model.tvalues, "pval": model.pvalues})
+        res[b] = (model, tab)
+    return res
+
+def scatter_fit(features_df, bucket="Long", xcol="cum_net_dur", ycol="pre_concession_bp"):
+    dfb = features_df[features_df["bucket"]==bucket].copy()
+    if dfb.empty: return
+    X = sm.add_constant(dfb[[xcol]])
+    y = dfb[ycol]
+    m = sm.OLS(y, X).fit()
+    xs = np.linspace(dfb[xcol].min(), dfb[xcol].max(), 50)
+    ys = m.predict(sm.add_constant(pd.DataFrame({xcol: xs})))
+    plt.figure(figsize=(6,4))
+    plt.scatter(dfb[xcol], y, alpha=0.7, label="auctions")
+    plt.plot(xs, ys, "r-", label=f"fit slope={m.params[xcol]:.2f}")
+    plt.axhline(0, color="k", lw=1, ls="--")
+    plt.xlabel(f"{xcol} (bn-years)"); plt.ylabel("Pre-auction concession (bp)")
+    plt.title(f"Concession vs {xcol} — {bucket}")
+    plt.legend(); plt.tight_layout(); plt.show()
+
+# ======================================== PIPELINE ========================================
+# Inputs you must already have:
+#   panel_long, issuance_df, qt_sales_df, qt_maturities_df, (optional) qe_purchases_df
+
+daily_supply = build_daily_net_duration_supply(
+    issuance_df=issuance_df,
+    qt_sales_df=qt_sales_df,
+    qt_maturities_df=qt_maturities_df,
+    qe_purchases_df=globals().get("qe_purchases_df", None)
+)
+
+features = features_for_regression(panel_long, daily_supply, lookback_k=LOOKBACK_K)
+
+results = run_bucket_regressions(features)
+for b, (model, table) in results.items():
+    print("\n" + "="*80)
+    print(f"Bucket: {b}")
+    print(model.summary())
+    print("\nTidy coefficients:")
+    print(table.round({"coef":2,"t":2,"pval":3}))
+
+for b in features["bucket"].unique():
+    scatter_fit(features, bucket=b)

@@ -1,0 +1,45 @@
+import pandas as pd
+
+# Load CSV
+df = pd.read_csv("your_file.csv")
+
+# Standardize column names
+df = df.rename(columns={
+    "Auction Date": "date",
+    "Gilt Name": "gilt_name",
+    "Total Nominal Amount Issued (£ million)": "notional_mn",
+})
+
+import re
+from datetime import datetime
+
+today_year = datetime.today().year
+
+def parse_maturity(gilt_name):
+    # Find the last 4-digit number in the string
+    match = re.findall(r"\d{4}", gilt_name)
+    if match:
+        return int(match[-1])
+    return None
+
+df["maturity_year"] = df["gilt_name"].apply(parse_maturity)
+df["tenor_years"] = df["maturity_year"] - today_year
+
+def assign_bucket(tenor):
+    if tenor < 7:
+        return "Short"
+    elif tenor <= 15:
+        return "Mid"
+    else:
+        return "Long"
+
+df["bucket"] = df["tenor_years"].apply(assign_bucket)
+
+df["notional_bn"] = df["notional_mn"] / 1000
+
+# Approximate modified duration = 0.9 * tenor (rough, but OK)
+df["mod_dur"] = 0.9 * df["tenor_years"]
+
+
+issuance_df = df[["date", "gilt_name", "tenor_years", "notional_bn", "mod_dur", "bucket"]].copy()
+issuance_df["type"] = "auction"   # all these rows are auctions

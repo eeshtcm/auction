@@ -1,0 +1,193 @@
+# ===================== BENCHMARK ASSET-SWAP BOXES (new vs old) =====================
+import re
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ---------------- Config ----------------
+WINDOW = (-8, 8)          # rel-day window around the new benchmark's auction
+BP_SCALE = 100.0          # your ylds are in %, so 1pp = 100bp
+BUCKETS = ("Short","Mid","Long")  # plotting order
+
+# ------------- Helpers: dates & parsing -------------
+def _dt(s): return pd.to_datetime(s, errors="coerce").dt.normalize()
+
+def _parse_maturity_date_from_series(series: pd.Series) -> pd.Series:
+    # expects DD-Mmm-YYYY inside series_id (e.g., "31-Jul-2035")
+    pat = re.compile(r'(\d{2}-[A-Za-z]{3}-\d{4})')
+    dt = series.astype(str).str.extract(pat, expand=False)
+    return pd.to_datetime(dt, dayfirst=True, errors="coerce")
+
+# ------------- 1) Clean + compute gilt TTM -------------
+g = gilt_df.copy()
+g["date"] = _dt(g["date"])
+if "tenor_years" not in g.columns:
+    g["maturity_date"] = _parse_maturity_date_from_series(g["series_id"])
+    # fallback if parsing fails: use mid-July of maturity_year
+    mfail = g["maturity_date"].isna() & g["maturity_year"].notna()
+    g.loc[mfail, "maturity_date"] = pd.to_datetime(g.loc[mfail, "maturity_year"].astype(int).astype(str) + "-07-15")
+    g["tenor_years"] = (g["maturity_date"] - g["date"]).dt.days / 365.0
+g = g.dropna(subset=["date","series_id","yld","tenor_years"]).copy()
+
+# ------------- 2) Clean swaps -------------
+s = swap_df.rename(columns={"yld":"swap_rate"}).copy()
+s["date"] = _dt(s["date"])
+s["tenor_years"] = pd.to_numeric(s["tenor_years"], errors="coerce")
+s = (s.dropna(subset=["date","tenor_years","swap_rate"])
+       .groupby(["date","tenor_years"], as_index=False)["swap_rate"].mean()
+       .sort_values(["date","tenor_years"]))
+
+# ------------- 3) Interp SONIA curve per day @ gilt TTM → ASW -------------
+def attach_swap_at_tenor(gilts: pd.DataFrame, swaps: pd.DataFrame) -> pd.DataFrame:
+    out = []
+    for d, gi in gilts.groupby("date", sort=False):
+        curve = swaps.loc[swaps["date"] == d, ["tenor_years","swap_rate"]]
+        curve = curve.drop_duplicates("tenor_years").sort_values("tenor_years")
+        if len(curve) < 2:
+            continue  # not enough points to interpolate that day
+        x = curve["tenor_years"].to_numpy(float)
+        y = curve["swap_rate"].to_numpy(float)
+        tgt = gi["tenor_years"].to_numpy(float)
+        tgt = np.clip(tgt, x.min(), x.max())
+        y_interp = np.interp(tgt, x, y)
+        tmp = gi.copy()
+        tmp["swap_rate"] = y_interp
+        out.append(tmp)
+    out = pd.concat(out, ignore_index=True) if out else gilts.assign(swap_rate=np.nan)
+    out["asw"] = out["yld"] - out["swap_rate"]        # in percentage points
+    out["asw_bp"] = out["asw"] * BP_SCALE
+    return out
+
+g_asw = attach_swap_at_tenor(g, s)
+
+# ------------- 4) Build benchmark pairs (new vs old) from calendar -------------
+cal = calendar_df.copy()
+cal["auction_dt"] = _dt(cal["auction_dt"])
+
+# For each bucket, sort auctions by date; pair each new series with the previous series in that bucket
+pairs = []
+for b, grp in cal.sort_values("auction_dt").groupby("bucket", sort=False):
+    ser = grp[["auction_dt","series_id"]].reset_index(drop=True)
+    for i in range(1, len(ser)):
+        pairs.append({
+            "bucket": b,
+            "new_series_id": ser.loc[i, "series_id"],
+            "new_auction_dt": ser.loc[i, "auction_dt"],
+            "old_series_id": ser.loc[i-1, "series_id"],
+            "old_auction_dt": ser.loc[i-1, "auction_dt"],  # sometimes useful to know
+        })
+pairs_df = pd.DataFrame(pairs)
+if pairs_df.empty:
+    raise ValueError("No benchmark pairs could be formed. Check calendar_df has multiple auctions per bucket.")
+
+# ------------- 5) Build BOX time series around each new auction -------------
+def box_panel_for_pair(new_sid, old_sid, auction_dt, window=WINDOW):
+    gi_new = g_asw[g_asw["series_id"] == new_sid].copy()
+    gi_old = g_asw[g_asw["series_id"] == old_sid].copy()
+    if gi_new.empty or gi_old.empty:
+        return pd.DataFrame(columns=["date","rel_day","box_bp","bucket","new_series_id","old_series_id","auction_dt"])
+    # Define rel_day ladder around the new auction date using NEW series’ trading dates
+    dates = sorted(gi_new["date"].unique().tolist())
+    if auction_dt not in dates:
+        # snap to nearest trading day within ±2d
+        dts = pd.Series(dates)
+        idx = (dts - auction_dt).abs().values.argmin()
+        if abs(dts.iloc[idx] - auction_dt) > pd.Timedelta(days=2):
+            return pd.DataFrame(columns=["date","rel_day","box_bp","bucket","new_series_id","old_series_id","auction_dt"])
+        pos0 = int(idx)
+    else:
+        pos0 = dates.index(auction_dt)
+
+    # build window
+    lo, hi = max(0, pos0+window[0]), min(len(dates)-1, pos0+window[1])
+    rows = []
+    for k in range(lo, hi+1):
+        d = dates[k]
+        # daily ASW (averaged if multiple prints per day)
+        asw_new = gi_new.loc[gi_new["date"] == d, "asw_bp"].mean()
+        asw_old = gi_old.loc[gi_old["date"] == d, "asw_bp"].mean()
+        if pd.isna(asw_new) or pd.isna(asw_old):
+            continue
+        box_bp = asw_new - asw_old           # box = ASW(new) – ASW(old)
+        rows.append({"date": d, "rel_day": k - pos0, "box_bp": box_bp})
+    return pd.DataFrame(rows)
+
+# Assemble all pairs
+box_rows = []
+for _, r in pairs_df.iterrows():
+    bp = box_panel_for_pair(r["new_series_id"], r["old_series_id"], r["new_auction_dt"], window=WINDOW)
+    if not bp.empty:
+        bp["bucket"] = r["bucket"]
+        bp["new_series_id"] = r["new_series_id"]
+        bp["old_series_id"] = r["old_series_id"]
+        bp["auction_dt"] = r["new_auction_dt"]
+        box_rows.append(bp)
+
+box_panel = pd.concat(box_rows, ignore_index=True) if box_rows else pd.DataFrame(
+    columns=["date","rel_day","box_bp","bucket","new_series_id","old_series_id","auction_dt"]
+)
+if box_panel.empty:
+    print("[BOX] No box data computed — check that gilt/swaps overlap your auction dates.")
+
+# ------------- 6) Plot mean / 0.75 / 0.25 by bucket -------------
+def _agg_stats(df, value_col):
+    g = df.groupby("rel_day")[value_col]
+    return pd.DataFrame({
+        "rel_day": g.mean().index,
+        "mean": g.mean().values,
+        "q75": g.quantile(0.75).values,
+        "q25": g.quantile(0.25).values
+    })
+
+def plot_box_paths(box_panel, buckets=BUCKETS):
+    if box_panel.empty:
+        print("No box_panel to plot."); return
+    b_used = [b for b in buckets if b in box_panel["bucket"].unique()]
+    fig, axes = plt.subplots(len(b_used), 1, figsize=(9, 8), sharex=True)
+    if len(b_used) == 1: axes = [axes]
+    for ax, b in zip(axes, b_used):
+        q = box_panel[box_panel["bucket"] == b]
+        if q.empty:
+            ax.set_title(f"Box (ASW new − ASW old) — {b} (no data)"); continue
+        stats = _agg_stats(q, "box_bp")
+        ax.plot(stats["rel_day"], stats["mean"], label="mean")
+        ax.plot(stats["rel_day"], stats["q75"], linestyle="--", label="0.75 quantile")
+        ax.plot(stats["rel_day"], stats["q25"], linestyle="--", label="0.25 quantile")
+        ax.axvline(0, linestyle="--", color="k", alpha=0.6)
+        ax.set_title(f"Benchmark box around auction — {b}")
+        ax.set_ylabel("Box (bp)  [ASW new − ASW old]")
+        ax.legend(loc="upper left")
+    axes[-1].set_xlabel("Trading days around new benchmark auction (T=0)")
+    plt.tight_layout()
+    return fig
+
+_ = plot_box_paths(box_panel)
+
+# ------------- 7) Quick pre/post diagnostics -------------
+def box_pre_post_stats(box_panel, pre=(-5,-1), post=(+1,+5)):
+    out = []
+    for (b), dfb in box_panel.groupby(["bucket"], sort=False):
+        pre_vals  = dfb[dfb["rel_day"].between(pre[0], pre[1])]["box_bp"]
+        post_vals = dfb[dfb["rel_day"].between(post[0], post[1])]["box_bp"]
+        out.append({
+            "bucket": b,
+            "pre_mean_bp":  np.nanmean(pre_vals),
+            "post_mean_bp": np.nanmean(post_vals),
+            "pre_median_bp":  np.nanmedian(pre_vals),
+            "post_median_bp": np.nanmedian(post_vals),
+            "N_pre": pre_vals.notna().sum(),
+            "N_post": post_vals.notna().sum(),
+        })
+    return pd.DataFrame(out)
+
+box_summary = box_pre_post_stats(box_panel, pre=(-5,-1), post=(+1,+5))
+print("\n=== Box pre/post summary (bp) ===")
+print(box_summary.round(2))
+
+
+
+Box (bp) = ASW(new) − ASW(old).
+
+If it widens into T (negative or positive depending on your house sign convention), that’s the concession showing up in RV terms.
+
+If it tightens after T, that’s the post‑auction richening.
